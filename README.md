@@ -153,4 +153,4 @@ Scan the QR code with your camera (iOS) or Expo Go app (Android).
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+This project is licensed under the NetiSolutions License.
