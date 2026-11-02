@@ -24,18 +24,35 @@ export default function SignupScreen() {
   const setPersonalInfo = useOnboardingStore((s) => s.setPersonalInfo);
   const register = useAuthStore((s) => s.register);
 
-  const [name, setName] = useState('Alex Vance');
-  const [email, setEmail] = useState('alex.vance@fitverse.ai');
-  const [password, setPassword] = useState('password123');
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   const handleCreate = async () => {
-    if (!name.trim() || !email.trim()) {
-      Alert.alert('Required Fields', 'Please supply your identity name and email.');
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      Alert.alert('Required Fields', 'Please supply your name, email, and a password (minimum 6 characters).');
       return;
     }
-    setPersonalInfo({ name: name.trim(), age: 25, gender: 'Male' });
-    await register(name, email);
-    router.push('/onboarding/personal-info');
+    if (password.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters.');
+      return;
+    }
+
+    try {
+      const result = await register(name.trim(), email.trim(), password);
+      setPersonalInfo({ name: name.trim(), age: 25, gender: 'Male' });
+      if (result.emailConfirmationRequired) {
+        Alert.alert(
+          'Verification Email Sent',
+          `A confirmation link has been sent to ${email.trim()}. Please verify your email address to access all features.`,
+          [{ text: 'CONTINUE SETUP', onPress: () => router.push('/onboarding/personal-info') }]
+        );
+      } else {
+        router.push('/onboarding/personal-info');
+      }
+    } catch (err: any) {
+      Alert.alert('Registration Failed', err.message || 'Unable to register user account.');
+    }
   };
 
   return (

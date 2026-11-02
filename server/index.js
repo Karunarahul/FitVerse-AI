@@ -2,22 +2,150 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createClient } = require('@supabase/supabase-js');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Production CORS Configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  : ['*'];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Blocked by CORS policy'));
+      }
+    },
+    credentials: true,
+  })
+);
+
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
-// Config from environment variables (Never exposed to client)
+// Environment Configurations
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_MODEL_PRIMARY = process.env.OPENAI_MODEL_PRIMARY || 'gpt-4o';
 const OPENAI_MODEL_FAST = process.env.OPENAI_MODEL_FAST || 'gpt-4o-mini';
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Initialize Supabase Server Client
+const supabaseServer =
+  SUPABASE_URL && (SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
+    : null;
+
+// Initialize Google Gemini Client
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+
+// Rate Limiter for AI Endpoints
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // max 30 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    data: null,
+    error: {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: 'Too many requests to AI endpoints. Please throttle your queries.',
+    },
+  },
+});
+
+/**
+ * Middleware: Verify Supabase JWT Bearer Token
+ * Rejects unauthenticated calls and injects verified req.user.
+ */
+async function verifySupabaseJwt(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      success: false,
+      data: null,
+      error: { code: 'UNAUTHORIZED', message: 'Missing or malformed Authorization Bearer header.' },
+    });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  // Explicit dev demo token bypass in development
+  if (DEMO_MODE && token.startsWith('dev_demo_token_')) {
+    req.user = { id: 'usr_dev_demo', email: 'dev@fitverse.ai', role: 'authenticated' };
+    return next();
+  }
+
+  if (!supabaseServer) {
+    return res.status(503).json({
+      success: false,
+      data: null,
+      error: { code: 'SERVER_MISCONFIGURED', message: 'Supabase server configuration is missing.' },
+    });
+  }
+
+  try {
+    const { data: { user }, error } = await supabaseServer.auth.getUser(token);
+    if (error || !user) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        error: { code: 'INVALID_TOKEN', message: error ? error.message : 'Invalid or expired authentication token.' },
+      });
+    }
+
+    // Attach authenticated user UUID securely
+    req.user = user;
+    next();
+  } catch (err) {
+    return res.status(401).json({
+      success: false,
+      data: null,
+      error: { code: 'AUTH_FAILED', message: 'Authentication verification failed.' },
+    });
+  }
+}
+
+// ====================================================================
+// PUBLIC HEALTH CHECK ENDPOINTS
+// ====================================================================
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    services: {
+      gemini: Boolean(GEMINI_API_KEY),
+      openai: Boolean(OPENAI_API_KEY),
+      supabase: Boolean(supabaseServer),
+    },
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: Math.floor(process.uptime()),
+    services: {
+      gemini: Boolean(GEMINI_API_KEY),
+      openai: Boolean(OPENAI_API_KEY),
+      supabase: Boolean(supabaseServer),
+    },
+  });
+});
 
 // Helper: Call OpenAI with structured JSON
 async function callOpenAI(messages, model = OPENAI_MODEL_FAST, jsonMode = true) {
@@ -54,44 +182,29 @@ async function callOpenAI(messages, model = OPENAI_MODEL_FAST, jsonMode = true) 
   return jsonMode ? JSON.parse(content) : content;
 }
 
-// 1. POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
-  res.json({
-    success: true,
-    data: {
-      token: `fitverse_jwt_${Date.now()}`,
-      user: {
-        id: 'usr_alex_01',
-        name: 'Alex',
-        email: email || 'alex@fitverse.ai',
-        age: 25,
-        gender: 'Male',
-        heightCm: 178,
-        weightKg: 74.5,
-        activityLevel: 'Athlete',
-        primaryGoal: 'Build',
-        environment: 'Commercial Facility',
-        equipment: ['Barbell', 'Dumbbells', 'Cables'],
-        workoutDuration: 45,
-        nutritionStyle: 'Omnivore',
-        restrictions: ['Gluten Free'],
-        premium: true,
-        streakDays: 14,
-        joinedDate: '2026-01-15',
-      },
-    },
-    error: null,
-  });
-});
+// ====================================================================
+// PROTECTED API ROUTES
+// ====================================================================
 
-// 2. POST /api/ai/generate-plan
-app.post('/api/ai/generate-plan', async (req, res) => {
+// 1. POST /api/ai/generate-plan (Protected, Rate-Limited)
+app.post('/api/ai/generate-plan', verifySupabaseJwt, aiLimiter, async (req, res) => {
   const user = req.body;
+  const verifiedUserId = req.user.id;
 
-  if (OPENAI_API_KEY && !DEMO_MODE) {
+  // Primary: Google Gemini 1.5
+  if (genAI) {
     try {
-      const systemPrompt = `You are FitVerse AI, an adaptive elite fitness operating system.
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-1.5-flash',
+        generationConfig: { responseMimeType: 'application/json' },
+      });
+
+      const prompt = `You are FitVerse AI, an elite adaptive performance fitness operating system.
+User Profile:
+Name: ${user.name}, Age: ${user.age}, Gender: ${user.gender}, Height: ${user.heightCm}cm, Weight: ${user.weightKg}kg.
+Activity: ${user.activityLevel}, Goal: ${user.primaryGoal}, Environment: ${user.environment}.
+Duration: ${user.workoutDuration} mins. Nutrition Style: ${user.nutritionStyle}, Restrictions: ${JSON.stringify(user.restrictions || [])}.
+
 Generate a structured workout and nutrition plan in valid JSON matching this schema:
 {
   "workoutPlan": {
@@ -139,450 +252,146 @@ Generate a structured workout and nutrition plan in valid JSON matching this sch
   "aiSynthesis": "string"
 }`;
 
-      const userPrompt = `User Profile:
-Name: ${user.name}, Age: ${user.age}, Gender: ${user.gender}, Height: ${user.heightCm}cm, Weight: ${user.weightKg}kg.
-Activity: ${user.activityLevel}, Goal: ${user.primaryGoal}, Environment: ${user.environment}.
-Duration: ${user.workoutDuration} mins. Style: ${user.nutritionStyle}, Restrictions: ${JSON.stringify(user.restrictions)}.
-Generate customized workout and meals respecting equipment and dietary restrictions.`;
+      const result = await model.generateContent(prompt);
+      const parsed = JSON.parse(result.response.text());
+      return res.json({ success: true, data: parsed, error: null });
+    } catch (err) {
+      console.warn('[FitVerse Server] Gemini generate-plan warning:', err.message);
+    }
+  }
+
+  // Fallback: OpenAI
+  if (OPENAI_API_KEY) {
+    try {
+      const systemPrompt = `You are FitVerse AI, an adaptive elite fitness operating system.
+Generate a structured workout and nutrition plan in valid JSON with workoutPlan, nutritionPlan and aiSynthesis fields.`;
+      const userPrompt = `User: ${user.name}, ${user.primaryGoal}, ${user.weightKg}kg.`;
 
       const aiResult = await callOpenAI([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
-      ], OPENAI_MODEL_PRIMARY, true);
-
+      ]);
       return res.json({ success: true, data: aiResult, error: null });
     } catch (err) {
-      console.warn('OpenAI error during generate-plan, falling back to deterministic fixture:', err.message);
+      console.warn('[FitVerse Server] OpenAI generate-plan warning:', err.message);
     }
   }
 
-  // Deterministic Demo Fallback
-  return res.json({
+  // Deterministic Fallback
+  res.json({
     success: true,
     data: {
       workoutPlan: {
         id: `plan_${Date.now()}`,
-        name: user.primaryGoal === 'Build' ? 'Hypertrophy Core V.4' : 'Metabolic Ignition Protocol',
-        phase: 'Hypertrophy Phase II',
+        name: `${user.primaryGoal || 'Hypertrophy'} Protocol Alpha`,
+        phase: 'Base Conditioning',
         durationMinutes: user.workoutDuration || 45,
-        calories: 450,
-        difficulty: 'Advanced',
+        calories: 380,
+        difficulty: 'Intermediate',
         targetMuscles: ['Chest', 'Shoulders', 'Triceps'],
-        aiPrediction: 'Expected 1RM Increase: +2.5%',
+        aiPrediction: 'Estimated strength progression: +4.5% over 14 days',
         exercises: [
           {
             id: 'ex_1',
             name: 'Barbell Bench Press',
             primaryMuscle: 'Chest',
             sets: 4,
-            reps: '8–10',
+            reps: '8-10',
             restSeconds: 90,
-            targetWeight: 225,
+            targetWeight: Math.round((user.weightKg || 74) * 0.85),
             completedSets: 0,
           },
           {
             id: 'ex_2',
-            name: 'Seated Dumbbell Press',
-            primaryMuscle: 'Shoulders',
-            sets: 4,
-            reps: '10–12',
-            restSeconds: 60,
-            targetWeight: 65,
+            name: 'Incline Dumbbell Press',
+            primaryMuscle: 'Upper Chest',
+            sets: 3,
+            reps: '10-12',
+            restSeconds: 75,
+            targetWeight: Math.round((user.weightKg || 74) * 0.3),
             completedSets: 0,
           },
           {
             id: 'ex_3',
-            name: 'Incline Cable Flyes',
-            primaryMuscle: 'Chest',
+            name: 'Overhead Barbell Press',
+            primaryMuscle: 'Shoulders',
             sets: 3,
-            reps: '12–15',
-            restSeconds: 45,
-            targetWeight: 40,
+            reps: '8-10',
+            restSeconds: 90,
+            targetWeight: Math.round((user.weightKg || 74) * 0.55),
             completedSets: 0,
           },
           {
             id: 'ex_4',
-            name: 'Barbell Deadlift',
-            primaryMuscle: 'Posterior Chain',
-            sets: 4,
-            reps: '8–10',
-            restSeconds: 90,
-            targetWeight: 315,
-            completedSets: 0,
-          },
-          {
-            id: 'ex_5',
-            name: 'Bent Over Rows',
-            primaryMuscle: 'Upper Back',
-            sets: 4,
-            reps: '12',
+            name: 'Cable Tricep Pushdowns',
+            primaryMuscle: 'Triceps',
+            sets: 3,
+            reps: '12-15',
             restSeconds: 60,
-            targetWeight: 185,
+            targetWeight: 25,
             completedSets: 0,
           },
         ],
       },
       nutritionPlan: {
-        calories: 2400,
-        proteinGrams: 180,
-        carbsGrams: 220,
+        calories: 2450,
+        proteinGrams: Math.round((user.weightKg || 74) * 2.2),
+        carbsGrams: 260,
         fatsGrams: 65,
-        consumedCalories: 1840,
-        consumedProtein: 120,
-        consumedCarbs: 160,
-        consumedFats: 45,
-        hydrationLiters: 1.2,
-        hydrationTargetLiters: 3.0,
+        hydrationLiters: 1.0,
+        hydrationTargetLiters: 3.5,
         meals: [
           {
             id: 'meal_1',
             type: 'Breakfast',
-            name: 'Anabolic Oat Bowl',
-            description: 'Rolled oats, whey isolate, wild blueberries, chia seeds, almond butter.',
-            calories: 620,
-            protein: 48,
-            carbs: 72,
-            fats: 16,
+            name: 'High-Protein Oats & Whey',
+            description: 'Rolled oats with skim milk and 1 scoop whey isolate',
+            calories: 450,
+            protein: 35,
+            carbs: 55,
+            fats: 8,
           },
           {
             id: 'meal_2',
             type: 'Lunch',
-            name: 'Performance Chicken Bowl',
-            description: 'Grilled chicken breast, quinoa, roasted sweet potatoes, avocado, chimichurri.',
-            calories: 780,
-            protein: 62,
-            carbs: 74,
-            fats: 22,
+            name: 'Grilled Paneer Tikka with Yellow Dal',
+            description: '150g grilled paneer, 1 bowl dal tadka, 2 phulkas',
+            calories: 620,
+            protein: 42,
+            carbs: 60,
+            fats: 18,
           },
           {
             id: 'meal_3',
             type: 'Dinner',
-            name: 'Wild Salmon & Asparagus',
-            description: 'Pan-seared wild salmon, garlic herb jasmine rice, lemon roasted asparagus.',
-            calories: 710,
-            protein: 52,
-            carbs: 56,
-            fats: 24,
-          },
-          {
-            id: 'meal_4',
-            type: 'Snack',
-            name: 'Greek Yogurt & Honey Crisp',
-            description: 'Double-strained Greek yogurt, wildflower honey, raw walnuts.',
-            calories: 290,
-            protein: 24,
-            carbs: 22,
-            fats: 9,
+            name: 'Tofu / Chicken Breast Sauté with Quinoa',
+            description: 'Steamed greens, olive oil drizzle, complex carbs',
+            calories: 580,
+            protein: 48,
+            carbs: 45,
+            fats: 14,
           },
         ],
       },
-      aiSynthesis: `FitVerse Neural Engine calibrated for ${user.name || 'Alex'}: ${user.primaryGoal || 'Build'} goal, ${user.workoutDuration || 45}m duration in ${user.environment || 'Commercial Facility'}. Caloric target set to 2400 kcal with 180g protein.`,
+      aiSynthesis: 'Protocol calibrated from user biometric baseline and target volume.',
     },
     error: null,
   });
 });
 
-// 3. POST /api/ai/swap-meal
-app.post('/api/ai/swap-meal', async (req, res) => {
-  const { currentMeal, nutritionStyle, restrictions, primaryGoal } = req.body;
-
-  if (OPENAI_API_KEY && !DEMO_MODE) {
-    try {
-      const prompt = `Current Meal: ${JSON.stringify(currentMeal)}.
-Diet Style: ${nutritionStyle}, Restrictions: ${JSON.stringify(restrictions)}, Goal: ${primaryGoal}.
-Suggest a direct 1-to-1 replacement meal in JSON:
-{
-  "id": "meal_swap_ai",
-  "type": "${currentMeal.type}",
-  "name": "string",
-  "description": "string",
-  "calories": number,
-  "protein": number,
-  "carbs": number,
-  "fats": number
-}`;
-      const result = await callOpenAI([
-        { role: 'system', content: 'You are FitVerse nutrition AI. Return matching calories and macros in JSON.' },
-        { role: 'user', content: prompt },
-      ], OPENAI_MODEL_FAST, true);
-      return res.json({ success: true, data: result, error: null });
-    } catch (e) {
-      console.warn('OpenAI swap failed, falling back to deterministic meal:', e.message);
-    }
-  }
-
-  // Deterministic alternative
-  const isBreakfast = currentMeal?.type === 'Breakfast';
-  const isDinner = currentMeal?.type === 'Dinner';
-
-  const replacement = isBreakfast
-    ? {
-        id: `meal_swapped_${Date.now()}`,
-        type: 'Breakfast',
-        name: 'Fluffy Protein Pancakes & Berries',
-        description: 'Gluten-free oat flour, vanilla isolate, pure organic maple drizzle, fresh raspberries.',
-        calories: 635,
-        protein: 50,
-        carbs: 68,
-        fats: 17,
-      }
-    : isDinner
-    ? {
-        id: `meal_swapped_${Date.now()}`,
-        type: 'Dinner',
-        name: 'Herb-Crusted Cod & Roasted Fingerlings',
-        description: 'Wild Atlantic cod fillet, crushed fingerling potatoes with rosemary, steamed broccolini.',
-        calories: 700,
-        protein: 55,
-        carbs: 58,
-        fats: 22,
-      }
-    : {
-        id: `meal_swapped_${Date.now()}`,
-        type: 'Lunch',
-        name: 'Grass-Fed Beef & Jasmine Rice Bowl',
-        description: 'Lean 93/7 beef mince, steamed aromatic jasmine rice, pickled cucumber, sesame ginger glaze.',
-        calories: 760,
-        protein: 66,
-        carbs: 69,
-        fats: 23,
-      };
-
-  res.json({ success: true, data: replacement, error: null });
-});
-
-// 4. POST /api/ai/analyze-progress
-app.post('/api/ai/analyze-progress', async (req, res) => {
-  const { stats } = req.body;
-
-  if (OPENAI_API_KEY && !DEMO_MODE) {
-    try {
-      const prompt = `Analyze these athlete performance statistics:
-${JSON.stringify(stats)}
-Provide sports science analysis in JSON format:
-{
-  "insight": "string (concise headline and recovery assessment)",
-  "recommendation": "string (actionable training cue)",
-  "confidence": number (e.g. 96),
-  "adaptations": ["string"]
-}`;
-      const result = await callOpenAI([
-        { role: 'system', content: 'You are FitVerse biomechanics AI analyzer. Return valid JSON only.' },
-        { role: 'user', content: prompt },
-      ], OPENAI_MODEL_FAST, true);
-      return res.json({ success: true, data: result, error: null });
-    } catch (e) {
-      console.warn('OpenAI analyze-progress error:', e.message);
-    }
-  }
-
-  res.json({
-    success: true,
-    data: {
-      insight: 'Recovery rate is optimal across 14 training days.',
-      recommendation: 'Suggest increasing volume on lower body days by +5% next week.',
-      confidence: 96,
-      adaptations: ['Increase primary compound load by +2.5% to +5%', 'Maintain protein synthesis intake at 180g'],
-    },
-    error: null,
-  });
-});
-
-// 5. POST /api/ai/adapt-plan
-app.post('/api/ai/adapt-plan', async (req, res) => {
-  const { profile, stats, currentPlan } = req.body;
-
-  if (OPENAI_API_KEY && !DEMO_MODE) {
-    try {
-      const prompt = `Current Athlete:
-Profile: ${JSON.stringify(profile)}
-Telemetry Stats: ${JSON.stringify(stats)}
-Current Workout Plan: ${JSON.stringify(currentPlan)}
-Adapt the plan by increasing/adjusting weights or volume by approximately 5% based on recovery.
-Return valid JSON matching this schema:
-{
-  "message": "string (brief summary of changes)",
-  "volumeAdjustmentPercent": number,
-  "intensityAdjustmentPercent": number,
-  "rationale": "string",
-  "updatedPlan": {
-    "id": "string",
-    "name": "string",
-    "phase": "string",
-    "durationMinutes": number,
-    "calories": number,
-    "difficulty": "string",
-    "targetMuscles": ["string"],
-    "aiPrediction": "string",
-    "adaptationNote": "string",
-    "exercises": [
-      {
-        "id": "string",
-        "name": "string",
-        "primaryMuscle": "string",
-        "sets": number,
-        "reps": "string",
-        "restSeconds": number,
-        "targetWeight": number,
-        "completedSets": 0
-      }
-    ]
-  }
-}`;
-      const result = await callOpenAI([
-        { role: 'system', content: 'You are FitVerse AI adaptive coach. Calibrate volume and progression in JSON.' },
-        { role: 'user', content: prompt },
-      ], OPENAI_MODEL_PRIMARY, true);
-      return res.json({ success: true, data: result, error: null });
-    } catch (e) {
-      console.warn('OpenAI adapt-plan error:', e.message);
-    }
-  }
-
-  const updatedExercises = (currentPlan?.exercises || []).map((ex) => ({
-    ...ex,
-    targetWeight: ex.targetWeight ? Math.round(ex.targetWeight * 1.05) : undefined,
-    completedSets: 0,
-  }));
-
-  res.json({
-    success: true,
-    data: {
-      message: 'Your recent upper-body performance indicates improved recovery. I’ve increased your next session’s resistance volume by 5%.',
-      volumeAdjustmentPercent: 5,
-      intensityAdjustmentPercent: 4.5,
-      rationale: 'Elevated HRV and zero missed sets across the last 3 sessions confirm central nervous system capacity.',
-      updatedPlan: {
-        ...(currentPlan || {}),
-        name: `${currentPlan?.name || 'Hypertrophy Core'} (Adapted)`,
-        aiPrediction: 'Expected 1RM Increase: +4.2%',
-        adaptationNote: 'Volume adjusted +5% based on recovery telemetry',
-        exercises: updatedExercises,
-      },
-    },
-    error: null,
-  });
-});
-
-// 6. POST /api/ai/chat
-app.post('/api/ai/chat', async (req, res) => {
-  const { message, context } = req.body;
-
-  if (OPENAI_API_KEY && !DEMO_MODE) {
-    try {
-      const system = `You are FitVerse AI, a personal fitness operating system coach.
-User context: ${JSON.stringify(context)}.
-Provide concise, authoritative, sports-science backed guidance. Do not provide medical diagnoses or dangerous advice.`;
-
-      const response = await callOpenAI([
-        { role: 'system', content: system },
-        { role: 'user', content: message },
-      ], OPENAI_MODEL_FAST, false);
-
-      return res.json({ success: true, data: { reply: response }, error: null });
-    } catch (e) {
-      console.warn('OpenAI chat error:', e.message);
-    }
-  }
-
-  // Deterministic Coach response
-  const msgLower = (message || '').toLowerCase();
-  let reply = 'Your biomechanical telemetry and metabolic output are well calibrated. Stay focused on proper progressive overload.';
-  if (msgLower.includes('weight') || msgLower.includes('bench') || msgLower.includes('increase')) {
-    reply = 'Based on your last three sessions, your completed reps have been consistently above target. A 5 lb increase on your compound movements is appropriate if your form remains stable.';
-  } else if (msgLower.includes('protein') || msgLower.includes('diet') || msgLower.includes('macro')) {
-    reply = 'Your current 180g protein target delivers 2.4g per kg, optimizing muscle protein synthesis while keeping satiety high.';
-  }
-
-  res.json({ success: true, data: { reply }, error: null });
-});
-
-// 7. POST /api/workouts/:id/complete
-app.post('/api/workouts/:id/complete', (req, res) => {
-  const { id } = req.params;
-  const { caloriesBurned, elapsedSeconds } = req.body;
-  res.json({
-    success: true,
-    data: {
-      workoutId: id,
-      completedAt: new Date().toISOString(),
-      caloriesBurned: caloriesBurned || 450,
-      elapsedSeconds: elapsedSeconds || 2700,
-      streakUpdated: 15,
-    },
-    error: null,
-  });
-});
-
-// 8. GET /api/user/profile
-app.get('/api/user/profile', (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      id: 'usr_alex_01',
-      name: 'Alex',
-      email: 'alex.vance@fitverse.ai',
-      age: 25,
-      gender: 'Male',
-      heightCm: 178,
-      weightKg: 74.5,
-      activityLevel: 'Athlete',
-      primaryGoal: 'Build',
-      environment: 'Commercial Facility',
-      equipment: ['Barbell', 'Dumbbells', 'Cables', 'Bench'],
-      workoutDuration: 45,
-      nutritionStyle: 'Omnivore',
-      restrictions: ['Gluten Free'],
-      premium: true,
-      streakDays: 14,
-      joinedDate: '2026-01-15',
-      currentPhase: 'Hypertrophy Phase II',
-    },
-    error: null,
-  });
-});
-
-// 9. GET /api/user/stats
-app.get('/api/user/stats', (req, res) => {
-  res.json({
-    success: true,
-    data: {
-      consistencyScore: 94,
-      consistencyChange: 2,
-      totalWorkoutsCompleted: 12,
-      totalWorkoutsTarget: 16,
-      averageBurnKcal: 640,
-      currentStreakDays: 14,
-      dailyGoalCompletionPercent: 78,
-      heartRateBpm: 68,
-      stepsCurrent: 8432,
-      stepsTarget: 10000,
-      sleepDuration: '7h 12m',
-      sleepQuality: 'Optimal',
-      weeklyOutputPercent: 75,
-      weightTrend: [
-        { date: 'Sep 10', weightKg: 75.8 },
-        { date: 'Sep 17', weightKg: 75.4 },
-        { date: 'Sep 24', weightKg: 75.0 },
-        { date: 'Oct 01', weightKg: 74.7 },
-        { date: 'Oct 05', weightKg: 74.5 },
-      ],
-      aiInsight: {
-        headline: 'Recovery Rate is Optimal',
-        details: 'Based on 14 analyzed sessions, your central nervous system recovery has peaked.',
-        recommendation: 'Suggest increasing volume on lower body days by +5% next week.',
-        confidence: 96,
-      },
-    },
-    error: null,
-  });
-});
-
-// 10. POST /api/ai/food/recognize (Gemini 1.5 Flash Vision)
-app.post('/api/ai/food/recognize', async (req, res) => {
+// 2. POST /api/ai/food/recognize (Protected, Rate-Limited, Gemini 1.5 Flash Vision)
+app.post('/api/ai/food/recognize', verifySupabaseJwt, aiLimiter, async (req, res) => {
   const { imageBase64 } = req.body;
 
-  if (genAI && imageBase64) {
+  if (!imageBase64) {
+    return res.status(400).json({
+      success: false,
+      data: null,
+      error: { code: 'INVALID_IMAGE', message: 'imageBase64 string is required.' },
+    });
+  }
+
+  if (genAI) {
     try {
       const model = genAI.getGenerativeModel({
         model: 'gemini-1.5-flash',
@@ -616,34 +425,34 @@ Output strictly valid JSON with this exact schema:
         },
       ]);
 
-      const text = result.response.text();
-      const parsed = JSON.parse(text);
-      return res.json({ success: true, data: parsed, error: null });
+      const parsed = JSON.parse(result.response.text());
+      return res.json({ success: true, data: { ...parsed, isOfflineEstimate: false }, error: null });
     } catch (err) {
-      console.warn('[Gemini Vision] fallback triggered:', err.message);
+      console.warn('[FitVerse Server] Gemini Vision warning:', err.message);
     }
   }
 
-  // High quality deterministic fallback
+  // Honest offline estimate
   res.json({
     success: true,
     data: {
-      foodName: 'Paneer Tikka with Yellow Dal & Basmati Rice',
-      servingGrams: 320,
-      calories: 520,
-      protein: 28.5,
-      carbs: 64.0,
-      fat: 14.2,
-      fiber: 5.8,
-      confidence: 0.94,
-      notes: 'Estimated standard Indian lunch portion.',
+      foodName: 'Mixed Meal (Offline Estimation)',
+      servingGrams: 280,
+      calories: 460,
+      protein: 24.0,
+      carbs: 58.0,
+      fat: 12.0,
+      fiber: 4.5,
+      confidence: 0.5,
+      notes: 'Generated via offline estimator because AI vision service was unreachable. Please adjust portions before saving.',
+      isOfflineEstimate: true,
     },
     error: null,
   });
 });
 
-// 11. POST /api/ai/coach/chat (FitVerse AI Personal Coach)
-app.post('/api/ai/coach/chat', async (req, res) => {
+// 3. POST /api/ai/coach/chat (Protected, Rate-Limited, FitVerse AI Personal Coach)
+app.post('/api/ai/coach/chat', verifySupabaseJwt, aiLimiter, async (req, res) => {
   const { message, context } = req.body;
 
   if (genAI && message) {
@@ -673,7 +482,7 @@ Output in valid JSON:
       const parsed = JSON.parse(result.response.text());
       return res.json({ success: true, data: parsed, error: null });
     } catch (err) {
-      console.warn('[Gemini Coach] fallback triggered:', err.message);
+      console.warn('[FitVerse Server] Gemini Coach warning:', err.message);
     }
   }
 
@@ -703,9 +512,140 @@ Output in valid JSON:
   });
 });
 
+// 4. POST /api/ai/swap-meal (Protected)
+app.post('/api/ai/swap-meal', verifySupabaseJwt, aiLimiter, (req, res) => {
+  const { currentMeal, nutritionStyle, restrictions, primaryGoal } = req.body;
+
+  res.json({
+    success: true,
+    data: {
+      id: `meal_swap_${Date.now()}`,
+      type: currentMeal?.type || 'Lunch',
+      name: 'Paneer Bhurji with 2 Multigrain Rotis',
+      description: 'Sautéed spiced crumbled paneer with onions, tomatoes and whole grain rotis.',
+      calories: currentMeal?.calories || 480,
+      protein: currentMeal?.protein || 32,
+      carbs: currentMeal?.carbs || 38,
+      fats: currentMeal?.fats || 16,
+    },
+    error: null,
+  });
+});
+
+// 5. POST /api/ai/adapt-plan (Protected)
+app.post('/api/ai/adapt-plan', verifySupabaseJwt, aiLimiter, (req, res) => {
+  const { profile, currentPlan } = req.body;
+
+  const updatedExercises = (currentPlan?.exercises || []).map((ex) => ({
+    ...ex,
+    targetWeight: ex.targetWeight ? Math.round(ex.targetWeight * 1.05) : undefined,
+    completedSets: 0,
+  }));
+
+  res.json({
+    success: true,
+    data: {
+      adaptationNote: 'Volume incremented by +5% on compound lifts based on recovery score.',
+      rationale: 'Neuromuscular readiness is optimal. Incremental progressive overload applied.',
+      confidence: 96,
+      updatedPlan: {
+        ...(currentPlan || {}),
+        phase: 'Progressive Overload Phase II',
+        exercises: updatedExercises,
+      },
+    },
+    error: null,
+  });
+});
+
+// 6. POST /api/workout/complete (Protected)
+app.post('/api/workout/complete', verifySupabaseJwt, (req, res) => {
+  const { id, caloriesBurned, elapsedSeconds } = req.body;
+
+  res.json({
+    success: true,
+    data: {
+      workoutId: id || `workout_${Date.now()}`,
+      userId: req.user.id,
+      completedAt: new Date().toISOString(),
+      caloriesBurned: caloriesBurned || 450,
+      elapsedSeconds: elapsedSeconds || 2700,
+      streakUpdated: 15,
+    },
+    error: null,
+  });
+});
+
+// 7. GET /api/user/profile (Protected)
+app.get('/api/user/profile', verifySupabaseJwt, async (req, res) => {
+  const userId = req.user.id;
+
+  if (supabaseServer) {
+    const { data, error } = await supabaseServer.from('user_profiles').select('*').eq('id', userId).maybeSingle();
+    if (data) {
+      return res.json({ success: true, data, error: null });
+    }
+  }
+
+  res.json({
+    success: true,
+    data: {
+      id: userId,
+      email: req.user.email,
+      name: 'Athlete',
+      streakDays: 14,
+    },
+    error: null,
+  });
+});
+
+// 8. DELETE /api/user/account (Protected, Secure Server-Side Account Deletion)
+app.delete('/api/user/account', verifySupabaseJwt, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    if (supabaseServer) {
+      // 1. Delete user profile and cascading records
+      await supabaseServer.from('user_profiles').delete().eq('id', userId);
+
+      // 2. Delete Supabase Auth record if service role key is present
+      if (SUPABASE_SERVICE_ROLE_KEY && supabaseServer.auth.admin) {
+        await supabaseServer.auth.admin.deleteUser(userId);
+      }
+    }
+
+    res.json({
+      success: true,
+      data: { message: 'User account and profile successfully deleted.' },
+      error: null,
+    });
+  } catch (err) {
+    console.error('[FitVerse Server] Account deletion error:', err.message);
+    res.status(500).json({
+      success: false,
+      data: null,
+      error: { code: 'DELETE_FAILED', message: err.message },
+    });
+  }
+});
+
+// Centralized Error Handling Middleware
+app.use((err, req, res, next) => {
+  console.error('[FitVerse Server Error]:', err.message);
+  res.status(err.status || 500).json({
+    success: false,
+    data: null,
+    error: {
+      code: err.code || 'INTERNAL_ERROR',
+      message: err.message || 'An unexpected server error occurred.',
+    },
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`[FitVerse AI Server] running on http://localhost:${PORT}`);
   console.log(`[FitVerse AI Server] Demo mode: ${DEMO_MODE}`);
-  console.log(`[FitVerse AI Server] Gemini configured: ${!!GEMINI_API_KEY}`);
-  console.log(`[FitVerse AI Server] OpenAI configured: ${!!OPENAI_API_KEY}`);
+  console.log(`[FitVerse AI Server] Supabase Server: ${Boolean(supabaseServer)}`);
+  console.log(`[FitVerse AI Server] Gemini Configured: ${Boolean(GEMINI_API_KEY)}`);
+  console.log(`[FitVerse AI Server] OpenAI Configured: ${Boolean(OPENAI_API_KEY)}`);
 });

@@ -37,7 +37,7 @@ export const notificationService = {
       const token = tokenData?.data || null;
 
       if (token && isSupabaseConfigured) {
-        const session = await supabaseService.getSession();
+        const session = await supabaseService.getValidSession();
         if (session?.user?.id) {
           await supabase.from('push_subscriptions').upsert({
             user_id: session.user.id,

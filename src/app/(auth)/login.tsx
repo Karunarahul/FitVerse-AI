@@ -18,22 +18,40 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { Toggle } from '../../components/Toggle';
 import { colors, typography, radii, spacing } from '../../theme';
 import { useAuthStore } from '../../stores/authStore';
+import { isDevDemoAllowed } from '../../services/auth';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, demoLogin, isLoading } = useAuthStore();
+  const { login, demoLogin, resetPassword, isLoading } = useAuthStore();
 
-  const [email, setEmail] = useState('alex.vance@fitverse.ai');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) {
+      Alert.alert('Required Fields', 'Please enter your email and password.');
+      return;
+    }
     try {
-      await login(email, password);
+      await login(email.trim(), password);
       router.replace('/(app)/home');
-    } catch {
-      Alert.alert('Authentication Error', 'Unable to initialize session.');
+    } catch (err: any) {
+      Alert.alert('Authentication Failed', err.message || 'Unable to initialize session.');
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      Alert.alert('Email Required', 'Please enter your email address to receive password reset instructions.');
+      return;
+    }
+    try {
+      const res = await resetPassword(email.trim());
+      Alert.alert('Reset Protocol', res.message || 'Password reset instructions have been dispatched to your email.');
+    } catch (err: any) {
+      Alert.alert('Reset Failed', err.message || 'Unable to send reset instructions.');
     }
   };
 
@@ -41,8 +59,8 @@ export default function LoginScreen() {
     try {
       await demoLogin();
       router.replace('/(app)/home');
-    } catch {
-      Alert.alert('Demo Error', 'Unable to load demo credentials.');
+    } catch (err: any) {
+      Alert.alert('Demo Error', err.message || 'Unable to load demo credentials.');
     }
   };
 
@@ -127,7 +145,7 @@ export default function LoginScreen() {
                 </View>
 
                 <TouchableOpacity
-                  onPress={() => Alert.alert('Reset Protocol', 'Password reset instructions have been dispatched to your email.')}
+                  onPress={handleForgotPassword}
                 >
                   <Text style={styles.forgotText}>Forgot Password?</Text>
                 </TouchableOpacity>
@@ -141,18 +159,20 @@ export default function LoginScreen() {
                 style={styles.submitBtn}
               />
 
-              {/* Demo 1-Click Access for Live Presentation */}
-              <TouchableOpacity
-                onPress={handleDemoAccess}
-                activeOpacity={0.8}
-                style={styles.demoCard}
-              >
-                <View style={styles.demoBadge}>
-                  <Ionicons name="flash" size={14} color={colors.aiAccent} />
-                  <Text style={styles.demoBadgeText}>FAST DEMO PASS</Text>
-                </View>
-                <Text style={styles.demoText}>Continue as Alex Vance (Verified Athlete)</Text>
-              </TouchableOpacity>
+              {/* Development-Only Demo Pass */}
+              {isDevDemoAllowed() && (
+                <TouchableOpacity
+                  onPress={handleDemoAccess}
+                  activeOpacity={0.8}
+                  style={styles.demoCard}
+                >
+                  <View style={styles.demoBadge}>
+                    <Ionicons name="flash" size={14} color={colors.aiAccent} />
+                    <Text style={styles.demoBadgeText}>DEV DEMO PASS</Text>
+                  </View>
+                  <Text style={styles.demoText}>Continue as Dev Athlete (Local Testing)</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Social Logins */}

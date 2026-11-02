@@ -2,7 +2,7 @@
 -- FITVERSE AI — PRODUCTION POSTGRESQL SCHEMA (SUPABASE)
 -- ====================================================================
 -- Description: Complete 16-table schema with foreign keys, indexes,
--- Row Level Security (RLS) policies, and starter seed records.
+-- idempotent Row Level Security (RLS) policies, and starter seed records.
 -- ====================================================================
 
 -- 1. Enable UUID Extension
@@ -323,7 +323,7 @@ CREATE TABLE IF NOT EXISTS public.push_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_push_subs_user ON public.push_subscriptions(user_id);
 
 -- ====================================================================
--- ROW LEVEL SECURITY (RLS) POLICIES
+-- ROW LEVEL SECURITY (RLS) POLICIES (IDEMPOTENT)
 -- Enforce user data isolation: each user can only read/write their own records
 -- ====================================================================
 
@@ -345,55 +345,77 @@ ALTER TABLE public.progress_photos ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
 
 -- 1. user_profiles policies
+DROP POLICY IF EXISTS "Users can view own profile" ON public.user_profiles;
 CREATE POLICY "Users can view own profile" ON public.user_profiles FOR SELECT USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Users can update own profile" ON public.user_profiles;
 CREATE POLICY "Users can update own profile" ON public.user_profiles FOR UPDATE USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.user_profiles;
 CREATE POLICY "Users can insert own profile" ON public.user_profiles FOR INSERT WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "Users can delete own profile" ON public.user_profiles;
 CREATE POLICY "Users can delete own profile" ON public.user_profiles FOR DELETE USING (auth.uid() = id);
 
 -- 2. body_metrics policies
-CREATE POLICY "Users can view own body metrics" ON public.body_metrics FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can view own body metrics" ON public.body_metrics;
+CREATE POLICY "Users can view own body metrics" ON public.body_metrics FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- 3. exercises (public read, authenticated insert)
+-- 3. exercises (read-only for standard users, write restricted to service_role)
+DROP POLICY IF EXISTS "Everyone can read standard exercises" ON public.exercises;
 CREATE POLICY "Everyone can read standard exercises" ON public.exercises FOR SELECT TO authenticated USING (TRUE);
 
 -- 4. workout_plans policies
-CREATE POLICY "Users can manage own workout plans" ON public.workout_plans FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own workout plans" ON public.workout_plans;
+CREATE POLICY "Users can manage own workout plans" ON public.workout_plans FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 5. workout_sessions policies
-CREATE POLICY "Users can manage own workout sessions" ON public.workout_sessions FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own workout sessions" ON public.workout_sessions;
+CREATE POLICY "Users can manage own workout sessions" ON public.workout_sessions FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 6. workout_sets policies
-CREATE POLICY "Users can manage own workout sets" ON public.workout_sets FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own workout sets" ON public.workout_sets;
+CREATE POLICY "Users can manage own workout sets" ON public.workout_sets FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
--- 7. food_database (public read for authenticated users)
+-- 7. food_database (read-only for standard users, write restricted to service_role)
+DROP POLICY IF EXISTS "Everyone can read standard food database" ON public.food_database;
 CREATE POLICY "Everyone can read standard food database" ON public.food_database FOR SELECT TO authenticated USING (TRUE);
 
 -- 8. food_logs policies
-CREATE POLICY "Users can manage own food logs" ON public.food_logs FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own food logs" ON public.food_logs;
+CREATE POLICY "Users can manage own food logs" ON public.food_logs FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 9. diet_plans policies
-CREATE POLICY "Users can manage own diet plans" ON public.diet_plans FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own diet plans" ON public.diet_plans;
+CREATE POLICY "Users can manage own diet plans" ON public.diet_plans FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 10. nutrition_targets policies
-CREATE POLICY "Users can manage own nutrition targets" ON public.nutrition_targets FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own nutrition targets" ON public.nutrition_targets;
+CREATE POLICY "Users can manage own nutrition targets" ON public.nutrition_targets FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 11. water_logs policies
-CREATE POLICY "Users can manage own water logs" ON public.water_logs FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own water logs" ON public.water_logs;
+CREATE POLICY "Users can manage own water logs" ON public.water_logs FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 12. sleep_logs policies
-CREATE POLICY "Users can manage own sleep logs" ON public.sleep_logs FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own sleep logs" ON public.sleep_logs;
+CREATE POLICY "Users can manage own sleep logs" ON public.sleep_logs FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 13. ai_conversations policies
-CREATE POLICY "Users can manage own AI conversations" ON public.ai_conversations FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own AI conversations" ON public.ai_conversations;
+CREATE POLICY "Users can manage own AI conversations" ON public.ai_conversations FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 14. ai_messages policies
-CREATE POLICY "Users can manage own AI messages" ON public.ai_messages FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own AI messages" ON public.ai_messages;
+CREATE POLICY "Users can manage own AI messages" ON public.ai_messages FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 15. progress_photos policies
-CREATE POLICY "Users can manage own progress photos" ON public.progress_photos FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own progress photos" ON public.progress_photos;
+CREATE POLICY "Users can manage own progress photos" ON public.progress_photos FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- 16. push_subscriptions policies
-CREATE POLICY "Users can manage own push subscriptions" ON public.push_subscriptions FOR ALL USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS "Users can manage own push subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Users can manage own push subscriptions" ON public.push_subscriptions FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- ====================================================================
 -- SEED DATA: STANDARD EXERCISE LIBRARY
@@ -434,4 +456,5 @@ VALUES
 ('Home-style Chicken Curry', 'Proteins', 'portion (~180g)', 180, 145.0, 14.5, 4.0, 8.0, 2.1, 1.0, 390.0, 20.0, 1.3, 210.0),
 ('Chana Masala', 'Indian Staples', 'bowl (~150g)', 150, 140.0, 7.2, 20.5, 3.5, 0.5, 5.5, 360.0, 42.0, 2.4, 290.0),
 ('Rajma Masala', 'Indian Staples', 'bowl (~150g)', 150, 128.0, 8.5, 21.0, 2.2, 0.4, 6.0, 340.0, 40.0, 2.5, 320.0),
-('Whey Protein Isolate', 'Proteins', 'scoop (~30g)', 30, 380.0, 80.0, 4.0, 3.0, 1.2, 0.5, 180.0, 420.0, 1.0, 310.0);
+('Whey Protein Isolate', 'Proteins', 'scoop (~30g)', 30, 380.0, 80.0, 4.0, 3.0, 1.2, 0.5, 180.0, 420.0, 1.0, 310.0)
+ON CONFLICT DO NOTHING;

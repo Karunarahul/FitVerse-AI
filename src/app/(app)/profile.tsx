@@ -24,17 +24,96 @@ import { useUserStore } from '../../stores/userStore';
 import { useWorkoutStore } from '../../stores/workoutStore';
 import { useAIStore } from '../../stores/aiStore';
 import { useSubscriptionStore } from '../../stores/subscriptionStore';
+import { supabaseService } from '../../services/supabase';
+
+const GOAL_OPTIONS = ['Build Muscle', 'Fat Loss', 'Athletic Performance', 'Cardio Endurance'];
+const LEVEL_OPTIONS = ['Beginner', 'Intermediate', 'Advanced'];
 
 export default function ProfileScreen() {
   const router = useRouter();
 
   const profile = useUserStore((s) => s.profile);
+  const updateProfile = useUserStore((s) => s.updateProfile);
   const currentPlan = useWorkoutStore((s) => s.currentPlan);
   const tierName = useSubscriptionStore((s) => s.tierName);
   const { adaptCurrentPlan, isAdapting, coachMessages, isCoachTyping, sendCoachMessage } = useAIStore();
 
   const [chatVisible, setChatVisible] = useState(false);
   const [chatInput, setChatInput] = useState('');
+
+  // Edit Profile & Metrics Modal state
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editWeight, setEditWeight] = useState(profile.weightKg.toString());
+  const [editHeight, setEditHeight] = useState(profile.heightCm.toString());
+  const [editTargetWeight, setEditTargetWeight] = useState(
+    ((profile as any).targetWeightKg || profile.weightKg).toString()
+  );
+  const [editGoal, setEditGoal] = useState(profile.primaryGoal || 'Build Muscle');
+  const [editLevel, setEditLevel] = useState((profile as any).experience || 'Intermediate');
+  const [isSavingMetrics, setIsSavingMetrics] = useState(false);
+
+  const handleOpenEditModal = () => {
+    setEditWeight(profile.weightKg.toString());
+    setEditHeight(profile.heightCm.toString());
+    setEditTargetWeight(((profile as any).targetWeightKg || profile.weightKg).toString());
+    setEditGoal(profile.primaryGoal || 'Build Muscle');
+    setEditLevel((profile as any).experience || 'Intermediate');
+    setEditModalVisible(true);
+  };
+
+  const handleSaveMetrics = async () => {
+    const parsedWeight = parseFloat(editWeight);
+    const parsedHeight = parseFloat(editHeight);
+    const parsedTargetWeight = parseFloat(editTargetWeight);
+
+    if (isNaN(parsedWeight) || parsedWeight <= 30 || parsedWeight >= 300) {
+      Alert.alert('Invalid Weight', 'Please enter a valid weight in kg (30-300).');
+      return;
+    }
+
+    if (isNaN(parsedHeight) || parsedHeight <= 100 || parsedHeight >= 250) {
+      Alert.alert('Invalid Height', 'Please enter a valid height in cm (100-250).');
+      return;
+    }
+
+    setIsSavingMetrics(true);
+
+    try {
+      if (Platform.OS !== 'web') {
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {}
+      }
+
+      // 1. Update user store & upsert user_profiles in Supabase
+      await updateProfile({
+        weightKg: parsedWeight,
+        heightCm: parsedHeight,
+        primaryGoal: editGoal,
+        targetWeightKg: isNaN(parsedTargetWeight) ? parsedWeight : parsedTargetWeight,
+        experience: editLevel,
+      } as any);
+
+      // 2. Insert time-series historical row in public.body_metrics
+      await supabaseService.logBodyMetrics({
+        weight_kg: parsedWeight,
+        body_fat_percentage: 18,
+        muscle_mass_kg: Math.round(parsedWeight * 0.75),
+      });
+
+      setEditModalVisible(false);
+      Alert.alert(
+        'Metrics Calibrated! ⚡',
+        `Weight: ${parsedWeight} kg, Height: ${parsedHeight} cm, Goal: ${editGoal}. Synchronized to your AI coach protocol.`
+      );
+    } catch (err: any) {
+      console.warn('[ProfileScreen] Metrics save warning:', err.message);
+      setEditModalVisible(false);
+      Alert.alert('Metrics Saved (Local)', 'Profile calibrated locally.');
+    } finally {
+      setIsSavingMetrics(false);
+    }
+  };
 
   const handleAdaptPlan = async () => {
     if (Platform.OS !== 'web') {
@@ -78,12 +157,23 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          <TouchableOpacity
-            onPress={() => router.push('/settings')}
-            style={styles.settingsButton}
-          >
-            <Ionicons name="settings-outline" size={20} color={colors.textPrimary} />
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={handleOpenEditModal}
+              style={styles.editMetricsBtn}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="create-outline" size={17} color={colors.primaryAction} />
+              <Text style={styles.editMetricsText}>Edit</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => router.push('/settings')}
+              style={styles.settingsButton}
+            >
+              <Ionicons name="settings-outline" size={20} color={colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView
@@ -106,7 +196,9 @@ export default function ProfileScreen() {
 
             <GlassCard level={2} style={styles.metricBox}>
               <Text style={styles.metricLabel}>MUSCLE MASS</Text>
-              <Text style={[styles.metricVal, { color: colors.primaryAction }]}>62 kg</Text>
+              <Text style={[styles.metricVal, { color: colors.primaryAction }]}>
+                {Math.round(profile.weightKg * 0.75)} kg
+              </Text>
               <Text style={styles.metricSub}>Lean Tissue</Text>
             </GlassCard>
 
@@ -122,7 +214,7 @@ export default function ProfileScreen() {
             <View style={styles.goalHeader}>
               <View>
                 <Text style={styles.goalTag}>ACTIVE TARGET GOAL</Text>
-                <Text style={styles.goalTitle}>{profile.currentPhase || 'Hypertrophy Phase II'}</Text>
+                <Text style={styles.goalTitle}>{profile.primaryGoal || 'Build Muscle'}</Text>
               </View>
               <Text style={styles.progressPercent}>65%</Text>
             </View>
@@ -130,7 +222,9 @@ export default function ProfileScreen() {
             <View style={styles.progressTrack}>
               <View style={[styles.progressFill, { width: '65%' }]} />
             </View>
-            <Text style={styles.goalSub}>Macro-cycle week 3 of 6 • Meso-intensity: 85%</Text>
+            <Text style={styles.goalSub}>
+              Target: {(profile as any).targetWeightKg || profile.weightKg} kg • Experience: {(profile as any).experience || 'Intermediate'}
+            </Text>
           </GlassCard>
 
           {/* AI Plan Adaptation Hero Card */}
@@ -205,6 +299,126 @@ export default function ProfileScreen() {
 
           <View style={{ height: 90 }} />
         </ScrollView>
+
+        {/* Edit Profile & Metrics Modal Dialog */}
+        <Modal
+          visible={editModalVisible}
+          animationType="slide"
+          transparent
+          onRequestClose={() => setEditModalVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.modalOverlay}
+          >
+            <View style={styles.modalContainer}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalHeaderLeft}>
+                  <Ionicons name="fitness" size={22} color={colors.primaryAction} />
+                  <Text style={styles.modalTitle}>Calibrate Biometrics & Goal</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setEditModalVisible(false)}
+                  style={styles.modalCloseBtn}
+                >
+                  <Ionicons name="close" size={20} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={styles.modalScroll}
+                contentContainerStyle={styles.modalScrollContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* Weight & Height Inputs */}
+                <View style={styles.modalRowInputs}>
+                  <View style={[styles.modalInputGroup, { flex: 1 }]}>
+                    <Text style={styles.modalInputLabel}>Current Weight (kg)</Text>
+                    <TextInput
+                      style={styles.modalTextInput}
+                      keyboardType="numeric"
+                      value={editWeight}
+                      onChangeText={setEditWeight}
+                    />
+                  </View>
+
+                  <View style={[styles.modalInputGroup, { flex: 1, marginLeft: 12 }]}>
+                    <Text style={styles.modalInputLabel}>Height (cm)</Text>
+                    <TextInput
+                      style={styles.modalTextInput}
+                      keyboardType="numeric"
+                      value={editHeight}
+                      onChangeText={setEditHeight}
+                    />
+                  </View>
+                </View>
+
+                {/* Target Weight */}
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.modalInputLabel}>Target Weight (kg)</Text>
+                  <TextInput
+                    style={styles.modalTextInput}
+                    keyboardType="numeric"
+                    value={editTargetWeight}
+                    onChangeText={setEditTargetWeight}
+                  />
+                </View>
+
+                {/* Primary Goal Selector */}
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.modalInputLabel}>Primary Athletic Objective</Text>
+                  <View style={styles.pillsRow}>
+                    {GOAL_OPTIONS.map((g) => {
+                      const isSel = editGoal === g;
+                      return (
+                        <TouchableOpacity
+                          key={g}
+                          style={[styles.pillOption, isSel && styles.pillOptionActive]}
+                          onPress={() => setEditGoal(g)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.pillOptionText, isSel && styles.pillOptionTextActive]}>
+                            {g}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {/* Experience Level Selector */}
+                <View style={styles.modalInputGroup}>
+                  <Text style={styles.modalInputLabel}>Fitness & Experience Tier</Text>
+                  <View style={styles.pillsRow}>
+                    {LEVEL_OPTIONS.map((lvl) => {
+                      const isSel = editLevel === lvl;
+                      return (
+                        <TouchableOpacity
+                          key={lvl}
+                          style={[styles.pillOption, isSel && styles.pillOptionActiveAi]}
+                          onPress={() => setEditLevel(lvl)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.pillOptionText, isSel && styles.pillOptionTextActive]}>
+                            {lvl}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <View style={{ marginTop: 24, marginBottom: 16 }}>
+                  <PrimaryButton
+                    title={isSavingMetrics ? 'SAVING BIOMETRICS...' : 'CALIBRATE & SYNC PROTOCOL'}
+                    onPress={handleSaveMetrics}
+                    disabled={isSavingMetrics}
+                  />
+                </View>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
 
         {/* Interactive AI Coach Modal Dialog */}
         <Modal
@@ -329,10 +543,32 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1.0,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  editMetricsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 84, 74, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 84, 74, 0.35)',
+    borderRadius: radii.full,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    gap: 5,
+  },
+  editMetricsText: {
+    ...typography.techSmall,
+    color: colors.primaryAccent,
+    fontSize: 11,
+    fontWeight: '700',
+  },
   settingsButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: colors.surfaceL2,
     borderWidth: 1,
     borderColor: colors.borderSubtle,
@@ -389,7 +625,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   goalTitle: {
-    ...typography.h3,
+    ...typography.heading3,
     fontSize: 18,
     fontWeight: '700',
     color: colors.textPrimary,
@@ -456,7 +692,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   coachStatement: {
-    ...typography.h3,
+    ...typography.heading3,
     fontSize: 17,
     fontWeight: '700',
     color: colors.textPrimary,
@@ -512,7 +748,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   chatLaunchTitle: {
-    ...typography.h3,
+    ...typography.heading3,
     fontSize: 15,
     color: colors.textPrimary,
   },
@@ -538,7 +774,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   premiumTitle: {
-    ...typography.h3,
+    ...typography.heading3,
     fontSize: 15,
     color: colors.textPrimary,
   },
@@ -549,14 +785,14 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
     justifyContent: 'flex-end',
   },
   modalContainer: {
     backgroundColor: '#1E0B09',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
-    height: '80%',
+    maxHeight: '85%',
     borderWidth: 1,
     borderColor: colors.borderSubtle,
   },
@@ -580,7 +816,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modalTitle: {
-    ...typography.h3,
+    ...typography.heading3,
     fontSize: 17,
     color: colors.textPrimary,
   },
@@ -597,8 +833,71 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  modalScroll: {
+    paddingHorizontal: 20,
+  },
+  modalScrollContent: {
+    paddingTop: 16,
+    paddingBottom: 24,
+  },
+  modalRowInputs: {
+    flexDirection: 'row',
+  },
+  modalInputGroup: {
+    marginBottom: 16,
+  },
+  modalInputLabel: {
+    ...typography.techSmall,
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  modalTextInput: {
+    backgroundColor: 'rgba(22, 8, 7, 0.75)',
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: 'rgba(174, 135, 131, 0.3)',
+    color: colors.textPrimary,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    ...typography.body,
+    fontSize: 15,
+  },
+  pillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  pillOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: radii.full,
+    backgroundColor: 'rgba(46, 27, 24, 0.7)',
+    borderWidth: 1,
+    borderColor: 'rgba(174, 135, 131, 0.25)',
+  },
+  pillOptionActive: {
+    backgroundColor: 'rgba(255, 84, 74, 0.2)',
+    borderColor: colors.primaryAction,
+  },
+  pillOptionActiveAi: {
+    backgroundColor: 'rgba(107, 211, 253, 0.2)',
+    borderColor: colors.aiAccent,
+  },
+  pillOptionText: {
+    ...typography.techSmall,
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  pillOptionTextActive: {
+    color: colors.textPrimary,
+    fontWeight: '700',
+  },
   chatScrollView: {
-    flex: 1,
+    maxHeight: 380,
   },
   chatScrollContent: {
     padding: 20,

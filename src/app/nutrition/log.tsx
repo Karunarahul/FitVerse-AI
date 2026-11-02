@@ -30,13 +30,16 @@ import {
 import { requestApi } from '../../services/api';
 
 type LogMode = 'database' | 'camera' | 'manual';
+const MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'] as const;
 
 export default function LogMealScreen() {
   const router = useRouter();
   const currentPlan = useNutritionStore((s) => s.currentPlan);
   const setPlan = useNutritionStore((s) => s.setPlan);
+  const addLoggedFood = useNutritionStore((s) => s.addLoggedFood);
 
   const [mode, setMode] = useState<LogMode>('database');
+  const [mealType, setMealType] = useState<string>('Lunch');
 
   // Database search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -47,15 +50,17 @@ export default function LogMealScreen() {
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiAnalysisComplete, setAiAnalysisComplete] = useState(false);
+  const [isOfflineEstimate, setIsOfflineEstimate] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Editable Form fields for confirmation
-  const [mealName, setMealName] = useState('');
-  const [calories, setCalories] = useState('');
-  const [protein, setProtein] = useState('');
-  const [carbs, setCarbs] = useState('');
-  const [fat, setFat] = useState('');
+  const [mealName, setMealName] = useState('Brown Rice (Cooked)');
+  const [calories, setCalories] = useState('167');
+  const [protein, setProtein] = useState('3.9');
+  const [carbs, setCarbs] = useState('35.3');
+  const [fat, setFat] = useState('1.4');
   const [grams, setGrams] = useState('150');
-  const [fiber, setFiber] = useState('');
+  const [fiber, setFiber] = useState('2.4');
 
   // Filtered foods for database search
   const filteredFoods = INDIAN_FOOD_DATABASE.filter(
@@ -75,6 +80,7 @@ export default function LogMealScreen() {
     setFat(scaled.fat.toString());
     setGrams(item.defaultGrams.toString());
     setFiber(scaled.fiber.toString());
+    setIsOfflineEstimate(false);
   };
 
   const handleGramsChange = (newGramsStr: string) => {
@@ -140,6 +146,7 @@ export default function LogMealScreen() {
   const analyzeFoodImage = async (base64Data: string) => {
     setIsAnalyzing(true);
     setAiAnalysisComplete(false);
+    setIsOfflineEstimate(false);
 
     try {
       const res = await requestApi<{
@@ -152,6 +159,7 @@ export default function LogMealScreen() {
         fiber?: number;
         confidence: number;
         notes?: string;
+        isOfflineEstimate?: boolean;
       }>('/api/ai/food/recognize', {
         method: 'POST',
         body: JSON.stringify({ imageBase64: base64Data }),
@@ -165,6 +173,7 @@ export default function LogMealScreen() {
         setFat(res.data.fat.toString());
         setGrams(res.data.servingGrams.toString());
         setFiber((res.data.fiber || 3.5).toString());
+        setIsOfflineEstimate(Boolean(res.data.isOfflineEstimate));
       } else {
         // High quality fallback recognition based on typical meal composition
         setMealName('Paneer Tikka with Steamed Rice & Dal');
@@ -174,6 +183,7 @@ export default function LogMealScreen() {
         setFat('14.2');
         setGrams('320');
         setFiber('5.8');
+        setIsOfflineEstimate(true);
       }
       setAiAnalysisComplete(true);
     } catch {
@@ -184,14 +194,15 @@ export default function LogMealScreen() {
       setFat('12.0');
       setGrams('250');
       setFiber('4.0');
+      setIsOfflineEstimate(true);
       setAiAnalysisComplete(true);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // Save Meal to Current Plan
-  const handleSaveMeal = () => {
+  // Save Meal to Supabase & Current Plan
+  const handleSaveMeal = async () => {
     if (!mealName.trim() || !calories.trim()) {
       Alert.alert('Incomplete Entry', 'Please specify a food name and calorie count.');
       return;
@@ -207,32 +218,66 @@ export default function LogMealScreen() {
     const parsedProtein = parseFloat(protein) || 0;
     const parsedCarbs = parseFloat(carbs) || 0;
     const parsedFat = parseFloat(fat) || 0;
+    const parsedGrams = parseFloat(grams) || 150;
+    const parsedFiber = parseFloat(fiber) || 0;
 
-    const newMeal = {
-      id: `meal_log_${Date.now()}`,
-      type: 'Lunch',
-      name: mealName.trim(),
-      description: `${grams}g portion logged via FitVerse Tracker`,
-      calories: parsedCals,
-      protein: parsedProtein,
-      carbs: parsedCarbs,
-      fats: parsedFat,
-      imageUrl: capturedImage || undefined,
-    };
+    setIsSaving(true);
 
-    const updatedPlan = {
-      ...currentPlan,
-      meals: [newMeal, ...currentPlan.meals],
-      calories: currentPlan.calories + parsedCals,
-      proteinGrams: currentPlan.proteinGrams + parsedProtein,
-      carbsGrams: currentPlan.carbsGrams + parsedCarbs,
-      fatsGrams: currentPlan.fatsGrams + parsedFat,
-    };
+    try {
+      // 1. Persist directly to Supabase food_logs and update store
+      await addLoggedFood({
+        food_name: mealName.trim(),
+        meal_type: mealType,
+        serving_grams: parsedGrams,
+        calories: parsedCals,
+        protein: parsedProtein,
+        carbs: parsedCarbs,
+        fat: parsedFat,
+        fiber: parsedFiber,
+        image_url: capturedImage || undefined,
+        ai_recognized: mode === 'camera' && !isOfflineEstimate,
+      });
 
-    setPlan(updatedPlan);
-    Alert.alert('Meal Logged', `${mealName} (${parsedCals} kcal) has been logged to your protocol.`, [
-      { text: 'OK', onPress: () => router.back() },
-    ]);
+      Alert.alert(
+        'Meal Logged',
+        `${mealName.trim()} (${parsedCals} kcal) has been logged and synchronized to your protocol.`,
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
+    } catch (err: any) {
+      console.warn('[LogMeal] Supabase save notice:', err.message);
+
+      // Fallback local update if network is unavailable
+      const newMeal = {
+        id: `meal_log_${Date.now()}`,
+        type: mealType,
+        name: mealName.trim(),
+        description: `${parsedGrams}g portion logged via FitVerse Tracker`,
+        calories: parsedCals,
+        protein: parsedProtein,
+        carbs: parsedCarbs,
+        fats: parsedFat,
+        imageUrl: capturedImage || undefined,
+      };
+
+      const updatedPlan = {
+        ...currentPlan,
+        meals: [newMeal, ...currentPlan.meals],
+        calories: currentPlan.calories + parsedCals,
+        proteinGrams: currentPlan.proteinGrams + parsedProtein,
+        carbsGrams: currentPlan.carbsGrams + parsedCarbs,
+        fatsGrams: currentPlan.fatsGrams + parsedFat,
+      };
+
+      setPlan(updatedPlan);
+
+      Alert.alert(
+        'Meal Logged (Local Cache)',
+        `${mealName.trim()} (${parsedCals} kcal) saved locally to your protocol.`,
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -243,6 +288,27 @@ export default function LogMealScreen() {
           subtitle="Track macros, search Indian foods, or scan with AI Vision."
           showBack
         />
+
+        {/* Meal Type Selector */}
+        <View style={styles.mealTypeRow}>
+          {MEAL_TYPES.map((type) => {
+            const isSelected = mealType === type;
+            return (
+              <TouchableOpacity
+                key={type}
+                style={[styles.mealTypeChip, isSelected && styles.mealTypeChipActive]}
+                onPress={() => setMealType(type)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[styles.mealTypeText, isSelected && styles.mealTypeTextActive]}
+                >
+                  {type}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
 
         {/* Mode Selector Tabs */}
         <View style={styles.tabRow}>
@@ -285,6 +351,7 @@ export default function LogMealScreen() {
               setProtein('');
               setCarbs('');
               setFat('');
+              setIsOfflineEstimate(false);
             }}
             activeOpacity={0.8}
           >
@@ -327,7 +394,7 @@ export default function LogMealScreen() {
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.stapleScroll}
               >
-                {filteredFoods.slice(0, 8).map((item) => {
+                {filteredFoods.slice(0, 10).map((item) => {
                   const isSelected = selectedFood?.id === item.id;
                   return (
                     <TouchableOpacity
@@ -435,6 +502,7 @@ export default function LogMealScreen() {
                     style={styles.cameraActionButton}
                     onPress={handleTakePhoto}
                     activeOpacity={0.8}
+                    disabled={isAnalyzing}
                   >
                     <Ionicons name="camera" size={18} color={colors.textDark} />
                     <Text style={styles.cameraActionText}>Take Photo</Text>
@@ -444,6 +512,7 @@ export default function LogMealScreen() {
                     style={[styles.cameraActionButton, styles.galleryButton]}
                     onPress={handlePickFromGallery}
                     activeOpacity={0.8}
+                    disabled={isAnalyzing}
                   >
                     <Ionicons name="images" size={18} color={colors.aiAccent} />
                     <Text style={[styles.cameraActionText, { color: colors.aiAccent }]}>
@@ -457,6 +526,16 @@ export default function LogMealScreen() {
                   *AI estimates are for nutritional guidance and not laboratory-certified assays.
                 </Text>
               </GlassCard>
+
+              {/* Offline Estimate Notice */}
+              {isOfflineEstimate && aiAnalysisComplete && (
+                <View style={styles.offlineNoticeBox}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
+                  <Text style={styles.offlineNoticeText}>
+                    Offline Estimation: AI vision server was unreachable. Nutritional values are modeled based on standard portion weights. You can edit them below before saving.
+                  </Text>
+                </View>
+              )}
 
               {aiAnalysisComplete && (
                 <View style={styles.formSection}>
@@ -606,8 +685,9 @@ export default function LogMealScreen() {
           {/* Confirm & Log Button */}
           <View style={styles.confirmButtonWrapper}>
             <PrimaryButton
-              title="Confirm & Log to Protocol"
+              title={isSaving ? 'Logging to Protocol...' : 'Confirm & Log to Protocol'}
               onPress={handleSaveMeal}
+              disabled={isSaving}
               style={{ width: '100%' }}
             />
           </View>
@@ -623,6 +703,34 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
+  },
+  mealTypeRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    marginBottom: 10,
+    gap: 8,
+  },
+  mealTypeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radii.full,
+    backgroundColor: 'rgba(46, 27, 24, 0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(174, 135, 131, 0.2)',
+  },
+  mealTypeChipActive: {
+    backgroundColor: 'rgba(255, 84, 74, 0.2)',
+    borderColor: colors.primaryAction,
+  },
+  mealTypeText: {
+    ...typography.techSmall,
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  mealTypeTextActive: {
+    color: colors.primaryAccent,
+    fontWeight: '700',
   },
   tabRow: {
     flexDirection: 'row',
@@ -888,6 +996,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 12,
     fontStyle: 'italic',
+  },
+  offlineNoticeBox: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255, 180, 171, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 180, 171, 0.3)',
+    borderRadius: radii.md,
+    padding: 12,
+    marginTop: 14,
+    gap: 8,
+    alignItems: 'center',
+  },
+  offlineNoticeText: {
+    flex: 1,
+    ...typography.bodySmall,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 16,
   },
   formSection: {
     marginTop: 20,
