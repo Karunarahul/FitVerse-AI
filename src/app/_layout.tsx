@@ -9,6 +9,7 @@ import { useWorkoutStore } from '../stores/workoutStore';
 import { useNutritionStore } from '../stores/nutritionStore';
 import { useAnalyticsStore } from '../stores/analyticsStore';
 import { useSubscriptionStore } from '../stores/subscriptionStore';
+import { notificationService } from '../services/notifications';
 
 export default function RootLayout() {
   useEffect(() => {
@@ -19,6 +20,11 @@ export default function RootLayout() {
     useNutritionStore.getState().loadPersistedPlan();
     useAnalyticsStore.getState().loadPersistedStats();
     useSubscriptionStore.getState().loadSubscription();
+
+    // Initialize notification listeners and daily routines
+    notificationService.registerForPushNotifications().then(() => {
+      notificationService.scheduleFitnessReminders();
+    }).catch(() => {});
   }, []);
 
   return (

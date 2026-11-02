@@ -12,6 +12,7 @@ interface NavItem {
   route: string;
   iconName: keyof typeof Ionicons.glyphMap;
   activeIconName: keyof typeof Ionicons.glyphMap;
+  isAiHighlight?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -28,6 +29,14 @@ const NAV_ITEMS: NavItem[] = [
     route: '/(app)/plans',
     iconName: 'barbell-outline',
     activeIconName: 'barbell',
+  },
+  {
+    key: 'coach',
+    label: 'COACH',
+    route: '/(app)/coach',
+    iconName: 'sparkles-outline',
+    activeIconName: 'sparkles',
+    isAiHighlight: true,
   },
   {
     key: 'stats',
@@ -66,6 +75,9 @@ export const BottomNav: React.FC = () => {
       <View style={styles.navBar}>
         {NAV_ITEMS.map((item) => {
           const isActive = pathname.includes(item.key);
+          const iconColor = isActive
+            ? (item.isAiHighlight ? colors.aiAccent : colors.primaryAction)
+            : colors.textMuted;
 
           return (
             <TouchableOpacity
@@ -74,17 +86,36 @@ export const BottomNav: React.FC = () => {
               activeOpacity={0.7}
               style={styles.tabButton}
             >
-              <View style={[styles.iconWrapper, isActive && styles.activeIconWrapper]}>
+              <View
+                style={[
+                  styles.iconWrapper,
+                  isActive && styles.activeIconWrapper,
+                  item.isAiHighlight && styles.aiIconWrapper,
+                  item.isAiHighlight && isActive && styles.aiActiveIconWrapper,
+                ]}
+              >
                 <Ionicons
                   name={isActive ? item.activeIconName : item.iconName}
-                  size={22}
-                  color={isActive ? colors.primaryAction : colors.textMuted}
+                  size={item.isAiHighlight ? 20 : 22}
+                  color={iconColor}
                 />
               </View>
-              <Text style={[styles.tabLabel, isActive && styles.activeTabLabel]}>
+              <Text
+                style={[
+                  styles.tabLabel,
+                  isActive && (item.isAiHighlight ? styles.activeAiTabLabel : styles.activeTabLabel),
+                ]}
+              >
                 {item.label}
               </Text>
-              {isActive && <View style={styles.activeDot} />}
+              {isActive && (
+                <View
+                  style={[
+                    styles.activeDot,
+                    item.isAiHighlight && styles.activeAiDot,
+                  ]}
+                />
+              )}
             </TouchableOpacity>
           );
         })}
@@ -99,9 +130,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingTop: 8,
-    backgroundColor: 'rgba(22, 8, 7, 0.92)',
+    backgroundColor: 'rgba(22, 8, 7, 0.94)',
     borderTopWidth: 1,
     borderTopColor: 'rgba(174, 135, 131, 0.18)',
     ...shadows.glass,
@@ -124,6 +155,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  aiIconWrapper: {
+    borderWidth: 1,
+    borderColor: 'rgba(107, 211, 253, 0.3)',
+    borderRadius: 14,
+    backgroundColor: 'rgba(107, 211, 253, 0.08)',
+  },
+  aiActiveIconWrapper: {
+    borderColor: colors.aiAccent,
+    backgroundColor: 'rgba(107, 211, 253, 0.22)',
+  },
   activeIconWrapper: {
     transform: [{ scale: 1.08 }],
   },
@@ -139,6 +180,10 @@ const styles = StyleSheet.create({
     color: colors.primaryAction,
     fontWeight: '800',
   },
+  activeAiTabLabel: {
+    color: colors.aiAccent,
+    fontWeight: '800',
+  },
   activeDot: {
     position: 'absolute',
     bottom: 1,
@@ -146,5 +191,8 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.primaryAction,
+  },
+  activeAiDot: {
+    backgroundColor: colors.aiAccent,
   },
 });

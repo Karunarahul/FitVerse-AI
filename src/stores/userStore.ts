@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { UserProfile, BodyMetrics } from '../types';
 import { demoUser } from '../utils/demoData';
 import { storage } from '../services/storage';
+import { supabaseService } from '../services/supabase';
 import { calculateBMI, calculateBMR, calculateHydrationTarget } from '../utils/calculations';
 
 interface UserState {
@@ -20,18 +21,27 @@ export const useUserStore = create<UserState>((set, get) => ({
   setProfile: (profile: UserProfile) => {
     set({ profile });
     storage.setItem(storage.KEYS.USER_PROFILE, profile);
+    supabaseService.saveProfile(profile).catch(() => {});
   },
 
   updateProfile: async (partial: Partial<UserProfile>) => {
     const updated = { ...get().profile, ...partial };
     set({ profile: updated });
     await storage.setItem(storage.KEYS.USER_PROFILE, updated);
+    supabaseService.saveProfile(updated).catch(() => {});
   },
 
   loadProfile: async () => {
     const stored = await storage.getItem<UserProfile>(storage.KEYS.USER_PROFILE);
     if (stored) {
       set({ profile: stored, isLoaded: true });
+      if (stored.id) {
+        supabaseService.fetchProfile(stored.id).then((remote) => {
+          if (remote) {
+            set((prev) => ({ profile: { ...prev.profile, ...remote } }));
+          }
+        }).catch(() => {});
+      }
     } else {
       set({ profile: demoUser, isLoaded: true });
     }

@@ -5,7 +5,9 @@ import {
   View,
   ScrollView,
   Platform,
+  TouchableOpacity,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -19,6 +21,7 @@ import { useNutritionStore } from '../../stores/nutritionStore';
 import { useUserStore } from '../../stores/userStore';
 
 export default function NutritionScreen() {
+  const router = useRouter();
   const { currentPlan, swapMeal, swappingMealId, addHydration } = useNutritionStore();
   const profile = useUserStore((s) => s.profile);
 
@@ -119,6 +122,24 @@ export default function NutritionScreen() {
               </View>
             </View>
           </GlassCard>
+
+          {/* Log / Scan Food Action Card */}
+          <TouchableOpacity
+            style={styles.logActionCard}
+            onPress={() => router.push('/nutrition/log')}
+            activeOpacity={0.8}
+          >
+            <View style={styles.logActionLeft}>
+              <View style={styles.logActionIcon}>
+                <Ionicons name="camera" size={20} color={colors.aiAccent} />
+              </View>
+              <View>
+                <Text style={styles.logActionTitle}>Log Meal or Scan Food</Text>
+                <Text style={styles.logActionSubtitle}>Search Indian foods, manual entry, or Gemini Vision</Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.primaryAction} />
+          </TouchableOpacity>
 
           {/* Meals List */}
           <View style={styles.mealsSection}>
@@ -265,6 +286,43 @@ const styles = StyleSheet.create({
   },
   mealsSection: {
     marginTop: 4,
+  },
+  logActionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(46, 27, 24, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(107, 211, 253, 0.35)',
+    borderRadius: radii.card,
+    padding: 16,
+    marginBottom: 20,
+  },
+  logActionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  logActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(107, 211, 253, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.aiAccent,
+  },
+  logActionTitle: {
+    ...typography.heading3,
+    color: colors.textPrimary,
+    fontSize: 15,
+  },
+  logActionSubtitle: {
+    ...typography.bodySmall,
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: 2,
   },
   sectionHeaderRow: {
     flexDirection: 'row',

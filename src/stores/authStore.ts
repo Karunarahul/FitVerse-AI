@@ -10,12 +10,14 @@ interface AuthState {
   isLoading: boolean;
   login: (email: string, pass: string) => Promise<void>;
   demoLogin: () => Promise<void>;
-  register: (name: string, email: string) => Promise<void>;
+  register: (name: string, email: string, pass?: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<boolean>;
+  deleteAccount: () => Promise<void>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<boolean>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   token: null,
   user: null,
   isAuthenticated: false,
@@ -60,15 +62,27 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  register: async (name: string, email: string) => {
+  register: async (name: string, email: string, pass: string = 'FitVerse@123') => {
     set({ isLoading: true });
     try {
-      const { token, user } = await authService.register(name, email);
+      const { token, user } = await authService.register(name, email, pass);
       set({ token, user, isAuthenticated: true, isLoading: false });
     } catch (e) {
       set({ isLoading: false });
       throw e;
     }
+  },
+
+  resetPassword: async (email: string) => {
+    return authService.resetPassword(email);
+  },
+
+  deleteAccount: async () => {
+    const current = get().user;
+    if (current?.id) {
+      await authService.deleteAccount(current.id);
+    }
+    set({ token: null, user: null, isAuthenticated: false });
   },
 
   logout: async () => {

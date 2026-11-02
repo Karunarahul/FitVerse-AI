@@ -15,6 +15,7 @@ export default function AppLayout() {
       >
         <Stack.Screen name="home" />
         <Stack.Screen name="plans" />
+        <Stack.Screen name="coach" />
         <Stack.Screen name="stats" />
         <Stack.Screen name="profile" />
       </Stack>
